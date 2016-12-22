@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 
 	"github.com/Mirantis/k8s-AppController/client"
 	"github.com/Mirantis/k8s-AppController/scheduler"
@@ -69,19 +70,77 @@ func getStatus(cmd *cobra.Command, args []string) {
 }
 
 // InitGetStatusCommand is an initialiser for get-status
-func InitGetStatusCommand() (*cobra.Command, error) {
-	var err error
+func InitGetStatusCommand() *cobra.Command {
 	run := &cobra.Command{
 		Use:   "get-status",
 		Short: "Get status of deployment",
 		Long:  "Get status of deployment",
 		Run:   getStatus,
 	}
-	var labelSelector string
-	run.Flags().StringVarP(&labelSelector, "label", "l", "", "Label selector. Overrides KUBERNETES_AC_LABEL_SELECTOR env variable in AppController pod.")
 
 	var getJSON, report bool
 	run.Flags().BoolVarP(&getJSON, "json", "j", false, "Output JSON")
 	run.Flags().BoolVarP(&report, "report", "r", false, "Get human-readable full report")
-	return run, err
+
+	return run
+}
+
+func getObjectStatus(cmd *cobra.Command, args []string) {
+	key := args[0]
+	var err error
+
+	var url string
+	if len(args) > 0 {
+		url = args[0]
+	}
+	if url == "" {
+		url = os.Getenv("KUBERNETES_CLUSTER_URL")
+	}
+
+	c, err := client.New(url)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	sel, err := labels.Parse("")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	depGraph, err := scheduler.BuildDependencyGraph(c, sel)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	log.Println("Checking for circular dependencies.")
+	cycles := scheduler.DetectCycles(depGraph)
+	if len(cycles) > 0 {
+		message := "Cycles detected, terminating:\n"
+		for _, cycle := range cycles {
+			keys := make([]string, 0, len(cycle))
+			for _, vertex := range cycle {
+				keys = append(keys, vertex.Key())
+			}
+			message = fmt.Sprintf("%sCycle: %s\n", message, strings.Join(keys, ", "))
+		}
+
+		log.Fatal(message)
+	} else {
+		log.Println("No cycles detected.")
+	}
+
+	resource := depGraph[key]
+	status, err := resource.Resource.Status(nil)
+
+	fmt.Printf("status: '%s', error: '%s'", status, err)
+}
+func initGetObjectStatusCommand() *cobra.Command {
+	run := &cobra.Command{
+		Use:   "object-status",
+		Short: "Get status of object",
+		Long:  "Get status of object",
+		Run:   getObjectStatus,
+	}
+
+	return run
 }
